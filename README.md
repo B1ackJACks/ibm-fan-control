@@ -21,4 +21,7 @@ A sophisticated thermal monitoring daemon for IBM/Lenovo laptops that provides i
 gcc -o fanreg fanreg.c
 ./fanreg
 
+##Warning
+It's projects in BETA!
+
 
