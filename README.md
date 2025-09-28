@@ -21,7 +21,35 @@ A sophisticated thermal monitoring daemon for IBM/Lenovo laptops that provides i
 gcc -o fanreg fanreg.c
 ./fanreg
 
-##Warning
+## How to make fanreg a Linux daemon?
+1. **Create service-file**
+```bash
+sudo tee /etc/systemd/system/fanreg.service <<EOF
+[Unit]
+Description=Daemon for monitoring temperature of IBM laptops
+After=multi-user.target
+
+[Service]
+ExecStart=/usr/local/bin/fanreg
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+2.**Startup the deamon **
+```bash
+sudo systemctl daemon-reload
+sudo systemctl start fanreg
+sudo systemctl enable fanreg
+```
+  
+  
+   
+   
+## Warning
 It's projects in BETA!
 
 
