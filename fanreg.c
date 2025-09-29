@@ -28,6 +28,10 @@ void signal_handler(int sig) {
     }
 }
 
+int change_mode(int mode)
+{
+    return mode > 1 ? 10 : 0;
+}
 /**
  * Monitors thermal sensors and adjusts fan speed accordingly
  * Uses temperature thresholds to set appropriate fan levels
