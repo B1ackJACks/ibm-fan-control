@@ -39,17 +39,49 @@ User=root
 WantedBy=multi-user.target
 EOF
 ```
-2.**Startup the deamon **
+2. **Creating a client script for the fan control daemon**
+ ```bash
+  #!/bin/bash
+TMP_CONF="/etc/fanreg.conf.tmp"
+CONF="/etc/fanreg.conf"
+PIDFILE="/var/run/fanreg.pid"
+
+echo "param=$1" > "$TMP_CONF"
+
+
+if [ ! -s "$TMP_CONF" ]; then
+  echo "Еrror: config is empty"
+  exit 1
+fi
+
+mv "$TMP_CONF" "$CONF"
+
+if [ -f "$PIDFILE" ]; then
+ kill -SIGHUP $(cat "$PIDFILE")
+else
+ echo "Is the fanreg-daemon is not running?"
+fi
+````
+Don't forget to create etc/fanreg.conf file
+3.**Startup the deamon **
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl start fanreg
 sudo systemctl enable fanreg
 ```
-  
-  
-   
-   
+
+## How to use?
+```bash
+fanreg <mode>
+```
+mode:
+med - for routine work 
+ext - for routine work with workload
+max - for workload
+
 ## Warning
 It's projects in BETA!
+Please review the code before running the program!
+
 
 
