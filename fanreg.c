@@ -5,130 +5,230 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <string.h>
+#include <errno.h>
 
-// Global volatile flag for safe signal handling
-volatile sig_atomic_t stop_flag = 0;
+// Global flags for signal handling
+volatile sig_atomic_t stop_flag = 0;   // Set to 1 when program should terminate
+volatile sig_atomic_t view_file = 0;   // Set to 1 when config file should be reloaded
 
 /**
- * Clean up function - restores fan control to auto mode and exits
+ * @brief Cleanup function called on program termination.
+ *        Restores fan control to automatic mode.
  */
-void clean_up() {
+void clean_up(void) {
+    // Restore automatic fan control
+    if (system("echo level auto | sudo tee /proc/acpi/ibm/fan > /dev/null 2>&1") == -1) {
+        fprintf(stderr, "Warning: Failed to restore automatic fan control.\n");
+    }
     printf("End work of program\n");
-    system("echo level auto | sudo tee /proc/acpi/ibm/fan");
-    exit(0);
+    exit(EXIT_SUCCESS);
 }
 
 /**
- * Signal handler for graceful shutdown
- * Sets stop_flag when SIGINT, SIGTERM or SIGTSTP is received
+ * @brief Signal handler for various termination and reload signals.
+ * @param sig The signal number received.
  */
 void signal_handler(int sig) {
-    if (sig == SIGINT || sig == SIGTERM || sig == SIGTSTP) {
-        stop_flag = 1;
+    switch (sig) {
+        case SIGINT:
+        case SIGTERM:
+        case SIGTSTP:
+            stop_flag = 1;
+            break;
+        case SIGHUP:
+            view_file = 1;
+            printf("Received SIGHUP: reloading configuration...\n");
+            break;
+        default:
+            // Should not happen, but handle gracefully
+            break;
     }
 }
 
-int change_mode(int mode)
-{
-    return mode > 1 ? 10 : 0;
-}
 /**
- * Monitors thermal sensors and adjusts fan speed accordingly
- * Uses temperature thresholds to set appropriate fan levels
+ * @brief Reads and parses the configuration file '/etc/fanreg.conf'.
+ *        Expected format: "param=<value>", where <value> is "ext", "med", or "max".
+ * @return Adjusted temperature threshold modifier:
+ *         - 10 for "ext"
+ *         - 5  for "med"
+ *         - 20 for "max"
+ *         - -1 on error or unknown value
  */
-void monitor_thermal() {
+int check_file(void) {
+    printf("Reloading configuration file...\n");
+    view_file = 0;
+
+    FILE *fd = fopen("/etc/fanreg.conf", "r");
+    if (!fd) {
+        perror("Failed to open /etc/fanreg.conf");
+        return -1;
+    }
+
+    char buffer[256];
+    if (!fgets(buffer, sizeof(buffer), fd)) {
+        fprintf(stderr, "Error reading from /etc/fanreg.conf\n");
+        fclose(fd);
+        return -1;
+    }
+    fclose(fd);
+
+    char param[256];
+    if (sscanf(buffer, "param=%255s", param) != 1) {
+        fprintf(stderr, "Invalid config format in /etc/fanreg.conf\n");
+        return -1;
+    }
+
+    if (strcmp("ext", param) == 0) {
+        return 10;
+    } else if (strcmp("med", param) == 0) {
+        return 5;
+    } else if (strcmp("max", param) == 0) {
+        return 20;
+    } else {
+        fprintf(stderr, "Unknown parameter value: %s\n", param);
+        return -1;
+    }
+}
+
+/**
+ * @brief Writes the current process ID to '/var/run/fanreg.pid'.
+ * @param pid Process ID to write.
+ */
+void write_pid(pid_t pid) {
+    FILE *fd = fopen("/var/run/fanreg.pid", "w");
+    if (!fd) {
+        perror("Failed to write PID file");
+        return; // Non-fatal, continue
+    }
+    fprintf(fd, "%d\n", (int)pid);
+    fclose(fd);
+}
+
+/**
+ * @brief Main thermal monitoring loop.
+ *        Reads CPU temperatures, determines appropriate fan level,
+ *        and applies it via ACPI interface.
+ */
+void monitor_thermal(void) {
     char buffer[256];
     char text[256];
-    int mod = 10;  // Temperature modifier for threshold adjustment
-    int temp[8], level = 0, curr_level = 0;
-    
+    int mod = 10;                 // Default temperature threshold modifier
+    int temp[8];                  // Temperature readings from 8 sensors
+    int curr_level = 0;           // Current fan level (0 = auto)
+
     while (stop_flag == 0) {
-        // Read thermal data from IBM ACPI interface
         FILE *filed = fopen("/proc/acpi/ibm/thermal", "r");
-        if (filed == NULL) {
-            perror("Failed to open thermal file");
+        if (!filed) {
+            perror("Failed to open /proc/acpi/ibm/thermal");
             sleep(20);
             continue;
         }
-        
-        fgets(buffer, sizeof(buffer), filed);
-        sscanf(buffer, "%s %d %d %d %d %d %d %d %d", 
-               text, &temp[0], &temp[1], &temp[2], &temp[3], 
-               &temp[4], &temp[5], &temp[6], &temp[7]);
 
-        // Determine fan level based on highest temperature reading
-        // Levels 2-6 correspond to increasing fan speeds
-        if (temp[0] > 60 - mod || temp[1] > 60 - mod || temp[2] > 60 - mod || 
-            temp[3] > 60 - mod || temp[4] > 60 - mod || temp[5] > 60 - mod || 
-            temp[6] > 60 - mod || temp[7] > 60 - mod) {
-            level = 6;  // Maximum fan speed for critical temperatures
-        } else if (temp[0] > 55 - mod || temp[1] > 55 - mod || temp[2] > 55 - mod || 
-                  temp[3] > 55 - mod || temp[4] > 55 - mod || temp[5] > 55 - mod || 
-                  temp[6] > 55 - mod || temp[7] > 55 - mod) {
-            level = 5;  // High fan speed
-        } else if (temp[0] > 50 - mod || temp[1] > 50 - mod || temp[2] > 50 - mod || 
-                  temp[3] > 50 - mod || temp[4] > 50 - mod || temp[5] > 50 - mod || 
-                  temp[6] > 50 - mod || temp[7] > 50 - mod) {
-            level = 4;  // Medium-high fan speed
-        } else if (temp[0] > 45 - mod || temp[1] > 45 || temp[2] > 45 || 
-                  temp[3] > 45 || temp[4] > 45 || temp[5] > 45 || 
-                  temp[6] > 45 || temp[7] > 45) {
-            level = 3;  // Medium fan speed
-        } else if (temp[0] > 40 || temp[1] > 40 - mod || temp[2] > 40 - mod || 
-                  temp[3] > 40 - mod || temp[4] > 40 - mod || temp[5] > 40 - mod || 
-                  temp[6] > 40 - mod || temp[7] > 40 - mod) {
-            level = 2;  // Low fan speed
-        } else {
-            // Temperatures are normal - use automatic fan control
-            system("echo level auto | sudo tee /proc/acpi/ibm/fan");
-            printf("level auto\n");
-            curr_level = 0;  // Reset current level when returning to auto
+        if (!fgets(buffer, sizeof(buffer), filed)) {
+            fprintf(stderr, "Failed to read thermal data\n");
+            fclose(filed);
+            sleep(20);
+            continue;
         }
-
-        // Only change fan level if it's different from current level
-        if (curr_level != level && level != 0) {
-            curr_level = level;
-            char command[256];
-            
-            // Construct and execute fan control command
-            snprintf(command, sizeof(command), "echo level %d | sudo tee /proc/acpi/ibm/fan", level);
-            system(command);
-        }
-        
         fclose(filed);
-        sleep(20);  // Wait 20 seconds between checks
+
+        // Parse the thermal line: "temperatures: T1 T2 ... T8"
+        int parsed = sscanf(buffer, "%255s %d %d %d %d %d %d %d %d",
+                            text, &temp[0], &temp[1], &temp[2], &temp[3],
+                            &temp[4], &temp[5], &temp[6], &temp[7]);
+
+        if (parsed < 9) {
+            fprintf(stderr, "Unexpected thermal data format\n");
+            sleep(20);
+            continue;
+        }
+
+        // Find maximum temperature among sensors
+        int max_temp = temp[0];
+        for (int i = 1; i < 8; i++) {
+            if (temp[i] > max_temp) {
+                max_temp = temp[i];
+            }
+        }
+
+        // Determine fan level based on max temperature and modifier
+        int level = 0;
+        if (max_temp > 60 - mod) {
+            level = 6;
+        } else if (max_temp > 55 - mod) {
+            level = 5;
+        } else if (max_temp > 50 - mod) {
+            level = 4;
+        } else if (max_temp > 45 - mod) {
+            level = 3;
+        } else if (max_temp > 40 - mod) {
+            level = 2;
+        } else {
+            // Below threshold: use automatic mode
+            if (curr_level != 0) {
+                if (system("echo level auto | sudo tee /proc/acpi/ibm/fan > /dev/null 2>&1") == -1) {
+                    fprintf(stderr, "Warning: Failed to set fan to auto\n");
+                }
+                printf("Fan set to auto (max temp: %d°C)\n", max_temp);
+                curr_level = 0;
+            }
+            // Skip fan level setting below
+            goto sleep_and_continue;
+        }
+
+        // Apply new fan level only if changed
+        if (curr_level != level) {
+            char cmd[64];
+            snprintf(cmd, sizeof(cmd), "echo level %d | sudo tee /proc/acpi/ibm/fan > /dev/null 2>&1", level);
+            if (system(cmd) == -1) {
+                fprintf(stderr, "Warning: Failed to set fan level %d\n", level);
+            }
+            printf("Fan set to level %d (max temp: %d°C)\n", level, max_temp);
+            curr_level = level;
+        }
+
+    sleep_and_continue:
+        // Check if config reload is requested
+        if (view_file) {
+            int new_mod = check_file();
+            if (new_mod != -1) {
+                mod = new_mod;
+                printf("Modifier updated to %d\n", mod);
+            }
+            // Reload immediately without waiting
+            continue;
+        }
+
+        sleep(20);
     }
-    
-    // Clean up when stop_flag is set
-    clean_up();
+
+    clean_up(); // Ensure cleanup on normal exit
 }
 
 /**
- * Main function - sets up signal handlers and starts thermal monitoring
+ * @brief Main function: sets up signal handlers and starts monitoring.
  */
 int main(int argc, char *argv[]) {
+    (void)argc; // Unused parameter
+    (void)argv;
+
+    pid_t pid = getpid();
+    printf("Fan regulator started. PID: %d\n", (int)pid);
+    write_pid(pid);
+
+    // Setup signal handlers
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = signal_handler;
 
-    // Register signal handlers for graceful shutdown
-    if (sigaction(SIGINT, &sa, NULL) == -1) {
-        perror("MONITOR: sigaction(SIGINT) failed");
+    if (sigaction(SIGINT,  &sa, NULL) == -1 ||
+        sigaction(SIGTERM, &sa, NULL) == -1 ||
+        sigaction(SIGTSTP, &sa, NULL) == -1 ||
+        sigaction(SIGHUP,  &sa, NULL) == -1) {
+        perror("Failed to set up signal handlers");
         exit(EXIT_FAILURE);
     }
 
-    if (sigaction(SIGTERM, &sa, NULL) == -1) {
-        perror("MONITOR: sigaction(SIGTERM) failed");
-        exit(EXIT_FAILURE);
-    }
-
-    if (sigaction(SIGTSTP, &sa, NULL) == -1) {
-        perror("MONITOR: sigaction(SIGTSTP) failed");
-        exit(EXIT_FAILURE);
-    }
-
-    // Start the thermal monitoring loop
     monitor_thermal();
-
     return 0;
 }
