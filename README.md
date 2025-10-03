@@ -75,9 +75,9 @@ sudo systemctl enable fanreg
 fanreg <mode>
 ```
 mode:
-med - for routine work 
-ext - for routine work with workload
-max - for workload
+med - for routine work; 
+ext - for routine work with workload;
+max - for workload;
 
 ## Warning
 It's projects in BETA!
